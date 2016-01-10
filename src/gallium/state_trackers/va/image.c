@@ -116,7 +116,7 @@ vlVaCreateImage(VADriverContextP ctx, VAImageFormat *format, int width, int heig
    img->width = width;
    img->height = height;
    w = align(width, 2);
-   h = align(width, 2);
+   h = align(height, 2);
 
    switch (format->fourcc) {
    case VA_FOURCC('N','V','1','2'):
@@ -332,13 +332,20 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
    if (format == PIPE_FORMAT_NONE)
       return VA_STATUS_ERROR_OPERATION_FAILED;
 
-   if (surf->buffer == NULL || format != surf->buffer->buffer_format) {
-      if (surf->buffer)
-         surf->buffer->destroy(surf->buffer);
+   if (format != surf->buffer->buffer_format) {
+      struct pipe_video_buffer *tmp_buf;
+      enum pipe_format old_surf_format = surf->templat.buffer_format;
+
       surf->templat.buffer_format = format;
-      surf->buffer = drv->pipe->create_video_buffer(drv->pipe, &surf->templat);
-      if (!surf->buffer)
-         return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      tmp_buf = drv->pipe->create_video_buffer(drv->pipe, &surf->templat);
+
+      if (!tmp_buf) {
+          surf->templat.buffer_format = old_surf_format;
+          return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      }
+
+      surf->buffer->destroy(surf->buffer);
+      surf->buffer = tmp_buf;
    }
 
    views = surf->buffer->get_sampler_view_planes(surf->buffer);

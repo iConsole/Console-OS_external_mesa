@@ -1004,7 +1004,7 @@ static void tgsi_src(struct r600_shader_ctx *ctx,
 			(tgsi_src->Register.SwizzleX == tgsi_src->Register.SwizzleW)) {
 
 			index = tgsi_src->Register.Index * 4 + tgsi_src->Register.SwizzleX;
-			r600_bytecode_special_constants(ctx->literals[index], &r600_src->sel, &r600_src->neg);
+			r600_bytecode_special_constants(ctx->literals[index], &r600_src->sel, &r600_src->neg, r600_src->abs);
 			if (r600_src->sel != V_SQ_ALU_SRC_LITERAL)
 				return;
 		}
@@ -2158,6 +2158,10 @@ static int r600_shader_from_tgsi(struct r600_context *rctx,
 		if (ctx.type == TGSI_PROCESSOR_GEOMETRY) {
 			struct r600_bytecode_alu alu;
 			int r;
+
+			/* GS thread with no output workaround - emit a cut at start of GS */
+			if (ctx.bc->chip_class == R600)
+				r600_bytecode_add_cfinst(ctx.bc, CF_OP_CUT_VERTEX);
 
 			memset(&alu, 0, sizeof(struct r600_bytecode_alu));
 			alu.op = ALU_OP1_MOV;
