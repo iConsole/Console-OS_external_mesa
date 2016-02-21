@@ -41,11 +41,9 @@
  * we do retain the vector types in that case.
  */
 
-#include "main/core.h"
-#include "brw_wm.h"
 #include "glsl/ir.h"
 #include "glsl/ir_expression_flattening.h"
-#include "glsl/glsl_types.h"
+#include "glsl/nir/glsl_types.h"
 
 class ir_channel_expressions_visitor : public ir_hierarchical_visitor {
 public:
@@ -290,23 +288,6 @@ ir_channel_expressions_visitor::visit_leave(ir_assignment *ir)
       }
       break;
 
-   case ir_unop_any: {
-      ir_expression *temp;
-      temp = new(mem_ctx) ir_expression(ir_binop_logic_or,
-					element_type,
-					get_element(op_var[0], 0),
-					get_element(op_var[0], 1));
-
-      for (i = 2; i < vector_elements; i++) {
-	 temp = new(mem_ctx) ir_expression(ir_binop_logic_or,
-					   element_type,
-					   get_element(op_var[0], i),
-					   temp);
-      }
-      assign(ir, 0, temp);
-      break;
-   }
-
    case ir_binop_dot: {
       ir_expression *last = NULL;
       for (i = 0; i < vector_elements; i++) {
@@ -379,6 +360,7 @@ ir_channel_expressions_visitor::visit_leave(ir_assignment *ir)
    }
 
    case ir_binop_ubo_load:
+   case ir_unop_get_buffer_size:
       unreachable("not yet supported");
 
    case ir_triop_fma:
@@ -430,6 +412,7 @@ ir_channel_expressions_visitor::visit_leave(ir_assignment *ir)
    case ir_triop_vector_insert:
    case ir_quadop_bitfield_insert:
    case ir_quadop_vector:
+   case ir_unop_ssbo_unsized_array_length:
       unreachable("should have been lowered");
 
    case ir_unop_unpack_half_2x16_split_x:

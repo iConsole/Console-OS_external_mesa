@@ -81,7 +81,7 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
       swizzle = identity_swizzle;
    }
 
-   for (int i = 0; i < num_components; ++i)
+   for (unsigned i = 0; i < num_components; ++i)
       new_swizzle[i] = instr->src[src].swizzle[swizzle[i]];
 
    switch (value->type) {
@@ -107,7 +107,7 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
 
          assert(!instr->src[src].abs && !instr->src[src].negate);
 
-         for (int i = 0; i < num_components; ++i) {
+         for (unsigned i = 0; i < num_components; ++i) {
             if (state->variables[var->variable].swizzle[i] != new_swizzle[i])
                return false;
          }
@@ -135,7 +135,7 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
          state->variables[var->variable].abs = false;
          state->variables[var->variable].negate = false;
 
-         for (int i = 0; i < 4; ++i) {
+         for (unsigned i = 0; i < 4; ++i) {
             if (i < num_components)
                state->variables[var->variable].swizzle[i] = new_swizzle[i];
             else
@@ -166,7 +166,7 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
          }
          return true;
       case nir_type_int:
-      case nir_type_unsigned:
+      case nir_type_uint:
       case nir_type_bool:
          for (unsigned i = 0; i < num_components; ++i) {
             if (load->value.i[new_swizzle[i]] != const_val->data.i)
@@ -310,7 +310,7 @@ construct_value(const nir_search_value *value, nir_alu_type type,
          load->def.name = ralloc_asprintf(mem_ctx, "%d", c->data.i);
          load->value.i[0] = c->data.i;
          break;
-      case nir_type_unsigned:
+      case nir_type_uint:
       case nir_type_bool:
          load->value.u[0] = c->data.u;
          break;
@@ -367,7 +367,7 @@ nir_replace_instr(nir_alu_instr *instr, const nir_search_expression *search,
    nir_instr_insert_before(&instr->instr, &mov->instr);
 
    nir_ssa_def_rewrite_uses(&instr->dest.dest.ssa,
-                            nir_src_for_ssa(&mov->dest.dest.ssa), mem_ctx);
+                            nir_src_for_ssa(&mov->dest.dest.ssa));
 
    /* We know this one has no more uses because we just rewrote them all,
     * so we can remove it.  The rest of the matched expression, however, we

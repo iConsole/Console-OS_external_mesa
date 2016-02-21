@@ -94,6 +94,8 @@ static void print_usage(void)
 	printf("    --saturate-t MASK - bitmask of samplers to saturate T coord\n");
 	printf("    --saturate-r MASK - bitmask of samplers to saturate R coord\n");
 	printf("    --stream-out      - enable stream-out (aka transform feedback)\n");
+	printf("    --ucp MASK        - bitmask of enabled user-clip-planes\n");
+	printf("    --gpu GPU_ID      - specify gpu-id (default 320)\n");
 	printf("    --help            - show this message\n");
 }
 
@@ -107,11 +109,10 @@ int main(int argc, char **argv)
 	struct ir3_shader_variant v;
 	struct ir3_shader s;
 	struct ir3_shader_key key = {};
+	unsigned gpu_id = 320;
 	const char *info;
 	void *ptr;
 	size_t size;
-
-	fd_mesa_debug |= FD_DBG_DISASM;
 
 	memset(&s, 0, sizeof(s));
 	memset(&v, 0, sizeof(v));
@@ -125,7 +126,7 @@ int main(int argc, char **argv)
 
 	while (n < argc) {
 		if (!strcmp(argv[n], "--verbose")) {
-			fd_mesa_debug |= FD_DBG_MSGS | FD_DBG_OPTMSGS;
+			fd_mesa_debug |= FD_DBG_MSGS | FD_DBG_OPTMSGS | FD_DBG_DISASM;
 			n++;
 			continue;
 		}
@@ -190,6 +191,20 @@ int main(int argc, char **argv)
 			continue;
 		}
 
+		if (!strcmp(argv[n], "--ucp")) {
+			debug_printf(" %s %s", argv[n], argv[n+1]);
+			key.ucp_enables = strtol(argv[n+1], NULL, 0);
+			n += 2;
+			continue;
+		}
+
+		if (!strcmp(argv[n], "--gpu")) {
+			debug_printf(" %s %s", argv[n], argv[n+1]);
+			gpu_id = strtol(argv[n+1], NULL, 0);
+			n += 2;
+			continue;
+		}
+
 		if (!strcmp(argv[n], "--help")) {
 			print_usage();
 			return 0;
@@ -232,7 +247,7 @@ int main(int argc, char **argv)
 	}
 
 	/* TODO cmdline option to target different gpus: */
-	compiler = ir3_compiler_create(320);
+	compiler = ir3_compiler_create(gpu_id);
 
 	info = "NIR compiler";
 	ret = ir3_compile_shader_nir(compiler, &v);

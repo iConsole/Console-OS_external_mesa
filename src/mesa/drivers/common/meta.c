@@ -479,6 +479,16 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
    save->API = ctx->API;
    ctx->API = API_OPENGL_COMPAT;
 
+   /* Mesa's extension helper functions use the current context's API to look up
+    * the version required by an extension as a step in determining whether or
+    * not it has been advertised. Since meta aims to only be restricted by the
+    * driver capability (and not by whether or not an extension has been
+    * advertised), set the helper functions' Version variable to a value that
+    * will make the checks on the context API and version unconditionally pass.
+    */
+   save->ExtensionsVersion = ctx->Extensions.Version;
+   ctx->Extensions.Version = ~0;
+
    /* Pausing transform feedback needs to be done early, or else we won't be
     * able to change other state.
     */
@@ -629,7 +639,7 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
       /* Save the shader state from ctx->Shader (instead of ctx->_Shader) so
        * that we don't have to worry about the current pipeline state.
        */
-      for (i = 0; i <= MESA_SHADER_FRAGMENT; i++) {
+      for (i = 0; i < MESA_SHADER_STAGES; i++) {
          _mesa_reference_shader_program(ctx, &save->Shader[i],
                                         ctx->Shader.CurrentProgram[i]);
       }
@@ -650,7 +660,6 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
       GLuint u, tgt;
 
       save->ActiveUnit = ctx->Texture.CurrentUnit;
-      save->ClientActiveUnit = ctx->Array.ActiveTexture;
       save->EnvMode = ctx->Texture.Unit[0].EnvMode;
 
       /* Disable all texture units */
@@ -683,7 +692,6 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
 
       /* set defaults for unit[0] */
       _mesa_ActiveTexture(GL_TEXTURE0);
-      _mesa_ClientActiveTexture(GL_TEXTURE0);
       _mesa_TexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
    }
 
@@ -735,8 +743,6 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
       /* save vertex array object state */
       _mesa_reference_vao(ctx, &save->VAO,
                                    ctx->Array.VAO);
-      _mesa_reference_buffer_object(ctx, &save->ArrayBufferObj,
-                                    ctx->Array.ArrayBufferObj);
       /* set some default state? */
    }
 
@@ -979,7 +985,9 @@ _mesa_meta_end(struct gl_context *ctx)
          GL_TESS_EVALUATION_SHADER,
          GL_GEOMETRY_SHADER,
          GL_FRAGMENT_SHADER,
+         GL_COMPUTE_SHADER,
       };
+      STATIC_ASSERT(MESA_SHADER_STAGES == ARRAY_SIZE(targets));
 
       bool any_shader;
 
@@ -1005,7 +1013,7 @@ _mesa_meta_end(struct gl_context *ctx)
       }
 
       any_shader = false;
-      for (i = 0; i <= MESA_SHADER_FRAGMENT; i++) {
+      for (i = 0; i < MESA_SHADER_STAGES; i++) {
          /* It is safe to call _mesa_use_shader_program even if the extension
           * necessary for that program state is not supported.  In that case,
           * the saved program object must be NULL and the currently bound
@@ -1110,7 +1118,6 @@ _mesa_meta_end(struct gl_context *ctx)
 
       /* restore current unit state */
       _mesa_ActiveTexture(GL_TEXTURE0 + save->ActiveUnit);
-      _mesa_ClientActiveTexture(GL_TEXTURE0 + save->ClientActiveUnit);
    }
 
    if (state & MESA_META_TRANSFORM) {
@@ -1144,10 +1151,6 @@ _mesa_meta_end(struct gl_context *ctx)
    }
 
    if (state & MESA_META_VERTEX) {
-      /* restore vertex buffer object */
-      _mesa_BindBuffer(GL_ARRAY_BUFFER_ARB, save->ArrayBufferObj->Name);
-      _mesa_reference_buffer_object(ctx, &save->ArrayBufferObj, NULL);
-
       /* restore vertex array object */
       _mesa_BindVertexArray(save->VAO->Name);
       _mesa_reference_vao(ctx, &save->VAO, NULL);
@@ -1250,6 +1253,7 @@ _mesa_meta_end(struct gl_context *ctx)
    ctx->Meta->SaveStackDepth--;
 
    ctx->API = save->API;
+   ctx->Extensions.Version = save->ExtensionsVersion;
 }
 
 
@@ -1540,7 +1544,8 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
    const char *vs_source =
       "#extension GL_AMD_vertex_shader_layer : enable\n"
       "#extension GL_ARB_draw_instanced : enable\n"
-      "attribute vec4 position;\n"
+      "#extension GL_ARB_explicit_attrib_location :enable\n"
+      "layout(location = 0) in vec4 position;\n"
       "void main()\n"
       "{\n"
       "#ifdef GL_AMD_vertex_shader_layer\n"
@@ -1549,7 +1554,9 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
       "   gl_Position = position;\n"
       "}\n";
    const char *fs_source =
-      "uniform vec4 color;\n"
+      "#extension GL_ARB_explicit_attrib_location :enable\n"
+      "#extension GL_ARB_explicit_uniform_location :enable\n"
+      "layout(location = 0) uniform vec4 color;\n"
       "void main()\n"
       "{\n"
       "   gl_FragColor = color;\n"
@@ -1576,11 +1583,8 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
    _mesa_DeleteShader(fs);
    _mesa_AttachShader(clear->ShaderProg, vs);
    _mesa_DeleteShader(vs);
-   _mesa_BindAttribLocation(clear->ShaderProg, 0, "position");
    _mesa_ObjectLabel(GL_PROGRAM, clear->ShaderProg, -1, "meta clear");
    _mesa_LinkProgram(clear->ShaderProg);
-
-   clear->ColorLocation = _mesa_GetUniformLocation(clear->ShaderProg, "color");
 
    has_integer_textures = _mesa_is_gles3(ctx) ||
       (_mesa_is_desktop_gl(ctx) && ctx->Const.GLSLVersion >= 130);
@@ -1592,7 +1596,8 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
                          "#version 130\n"
                          "#extension GL_AMD_vertex_shader_layer : enable\n"
                          "#extension GL_ARB_draw_instanced : enable\n"
-                         "in vec4 position;\n"
+                         "#extension GL_ARB_explicit_attrib_location :enable\n"
+                         "layout(location = 0) in vec4 position;\n"
                          "void main()\n"
                          "{\n"
                          "#ifdef GL_AMD_vertex_shader_layer\n"
@@ -1603,7 +1608,9 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
       const char *fs_int_source =
          ralloc_asprintf(shader_source_mem_ctx,
                          "#version 130\n"
-                         "uniform ivec4 color;\n"
+                         "#extension GL_ARB_explicit_attrib_location :enable\n"
+                         "#extension GL_ARB_explicit_uniform_location :enable\n"
+                         "layout(location = 0) uniform ivec4 color;\n"
                          "out ivec4 out_color;\n"
                          "\n"
                          "void main()\n"
@@ -1622,7 +1629,6 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
       _mesa_DeleteShader(fs);
       _mesa_AttachShader(clear->IntegerShaderProg, vs);
       _mesa_DeleteShader(vs);
-      _mesa_BindAttribLocation(clear->IntegerShaderProg, 0, "position");
 
       /* Note that user-defined out attributes get automatically assigned
        * locations starting from 0, so we don't need to explicitly
@@ -1632,9 +1638,6 @@ meta_glsl_clear_init(struct gl_context *ctx, struct clear_state *clear)
       _mesa_ObjectLabel(GL_PROGRAM, clear->IntegerShaderProg, -1,
                         "integer clear");
       _mesa_meta_link_program_with_debug(ctx, clear->IntegerShaderProg);
-
-      clear->IntegerColorLocation =
-	 _mesa_GetUniformLocation(clear->IntegerShaderProg, "color");
    }
 }
 
@@ -1766,12 +1769,10 @@ meta_clear(struct gl_context *ctx, GLbitfield buffers, bool glsl)
    if (fb->_IntegerColor) {
       assert(glsl);
       _mesa_UseProgram(clear->IntegerShaderProg);
-      _mesa_Uniform4iv(clear->IntegerColorLocation, 1,
-			  ctx->Color.ClearColor.i);
+      _mesa_Uniform4iv(0, 1, ctx->Color.ClearColor.i);
    } else if (glsl) {
       _mesa_UseProgram(clear->ShaderProg);
-      _mesa_Uniform4fv(clear->ColorLocation, 1,
-			  ctx->Color.ClearColor.f);
+      _mesa_Uniform4fv(0, 1, ctx->Color.ClearColor.f);
    }
 
    /* GL_COLOR_BUFFER_BIT */

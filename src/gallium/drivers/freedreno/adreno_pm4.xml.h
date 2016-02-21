@@ -8,13 +8,14 @@ http://github.com/freedreno/envytools/
 git clone https://github.com/freedreno/envytools.git
 
 The rules-ng-ng source files this header was generated from are:
-- /home/robclark/src/freedreno/envytools/rnndb/adreno.xml               (    364 bytes, from 2015-05-20 20:03:07)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno.xml               (    398 bytes, from 2015-09-24 17:25:31)
 - /home/robclark/src/freedreno/envytools/rnndb/freedreno_copyright.xml  (   1453 bytes, from 2015-05-20 20:03:07)
 - /home/robclark/src/freedreno/envytools/rnndb/adreno/a2xx.xml          (  32901 bytes, from 2015-05-20 20:03:14)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_common.xml (  10551 bytes, from 2015-05-20 20:03:14)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_pm4.xml    (  14968 bytes, from 2015-05-20 20:12:27)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/a3xx.xml          (  67120 bytes, from 2015-08-14 23:22:03)
-- /home/robclark/src/freedreno/envytools/rnndb/adreno/a4xx.xml          (  63915 bytes, from 2015-08-24 16:56:28)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_common.xml (  11518 bytes, from 2015-11-24 14:39:00)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno/adreno_pm4.xml    (  15149 bytes, from 2015-11-20 16:22:25)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno/a3xx.xml          (  69600 bytes, from 2015-11-24 14:39:00)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno/a4xx.xml          (  67220 bytes, from 2015-12-13 17:58:09)
+- /home/robclark/src/freedreno/envytools/rnndb/adreno/ocmem.xml         (   1773 bytes, from 2015-09-24 17:30:00)
 
 Copyright (C) 2013-2015 by the following authors:
 - Rob Clark <robdclark@gmail.com> (robclark)
@@ -198,7 +199,11 @@ enum adreno_state_type {
 
 enum adreno_state_src {
 	SS_DIRECT = 0,
+	SS_INVALID_ALL_IC = 2,
+	SS_INVALID_PART_IC = 3,
 	SS_INDIRECT = 4,
+	SS_INDIRECT_TCM = 5,
+	SS_INDIRECT_STM = 6,
 };
 
 enum a4xx_index_size {
@@ -226,7 +231,7 @@ static inline uint32_t CP_LOAD_STATE_0_STATE_BLOCK(enum adreno_state_block val)
 {
 	return ((val) << CP_LOAD_STATE_0_STATE_BLOCK__SHIFT) & CP_LOAD_STATE_0_STATE_BLOCK__MASK;
 }
-#define CP_LOAD_STATE_0_NUM_UNIT__MASK				0x7fc00000
+#define CP_LOAD_STATE_0_NUM_UNIT__MASK				0xffc00000
 #define CP_LOAD_STATE_0_NUM_UNIT__SHIFT				22
 static inline uint32_t CP_LOAD_STATE_0_NUM_UNIT(uint32_t val)
 {

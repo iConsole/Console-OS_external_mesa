@@ -362,44 +362,15 @@ static const int extra_ARB_shader_image_load_store_and_tessellation[] = {
    EXTRA_END
 };
 
-static const int extra_ARB_draw_indirect_es31[] = {
-   EXT(ARB_draw_indirect),
-   EXTRA_API_ES31,
-   EXTRA_END
-};
-
-static const int extra_ARB_shader_image_load_store_es31[] = {
-   EXT(ARB_shader_image_load_store),
-   EXTRA_API_ES31,
-   EXTRA_END
-};
-
-static const int extra_ARB_shader_atomic_counters_es31[] = {
-   EXT(ARB_shader_atomic_counters),
-   EXTRA_API_ES31,
-   EXTRA_END
-};
-
-static const int extra_ARB_texture_multisample_es31[] = {
-   EXT(ARB_texture_multisample),
-   EXTRA_API_ES31,
-   EXTRA_END
-};
-
-static const int extra_ARB_texture_gather_es31[] = {
-   EXT(ARB_texture_gather),
-   EXTRA_API_ES31,
-   EXTRA_END
-};
-
+/* HACK: remove when ARB_compute_shader is actually supported */
 static const int extra_ARB_compute_shader_es31[] = {
    EXT(ARB_compute_shader),
    EXTRA_API_ES31,
    EXTRA_END
 };
 
-static const int extra_ARB_explicit_uniform_location_es31[] = {
-   EXT(ARB_explicit_uniform_location),
+static const int extra_ARB_shader_storage_buffer_object_es31[] = {
+   EXT(ARB_shader_storage_buffer_object),
    EXTRA_API_ES31,
    EXTRA_END
 };
@@ -427,7 +398,6 @@ EXTRA_EXT(EXT_pixel_buffer_object);
 EXTRA_EXT(ARB_vertex_program);
 EXTRA_EXT2(NV_point_sprite, ARB_point_sprite);
 EXTRA_EXT2(ARB_vertex_program, ARB_fragment_program);
-EXTRA_EXT(ARB_geometry_shader4);
 EXTRA_EXT(ARB_color_buffer_float);
 EXTRA_EXT(EXT_framebuffer_sRGB);
 EXTRA_EXT(OES_EGL_image_external);
@@ -452,6 +422,7 @@ EXTRA_EXT(EXT_polygon_offset_clamp);
 EXTRA_EXT(ARB_framebuffer_no_attachments);
 EXTRA_EXT(ARB_tessellation_shader);
 EXTRA_EXT(ARB_shader_subroutine);
+EXTRA_EXT(ARB_shader_storage_buffer_object);
 
 static const int
 extra_ARB_color_buffer_float_or_glcore[] = {
@@ -481,12 +452,6 @@ static const int extra_gl32_es3[] = {
     EXTRA_VERSION_32,
     EXTRA_API_ES3,
     EXTRA_END,
-};
-
-static const int extra_gl32_ARB_geometry_shader4[] = {
-    EXTRA_VERSION_32,
-    EXT(ARB_geometry_shader4),
-    EXTRA_END
 };
 
 static const int extra_gl40_ARB_sample_shading[] = {
@@ -1029,21 +994,16 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       {
          struct gl_sampler_object *samp =
             ctx->Texture.Unit[ctx->Texture.CurrentUnit].Sampler;
-
-         /*
-          * The sampler object may have been deleted on another context,
-          * so we try to lookup the sampler object before returning its Name.
-          */
-         if (samp && _mesa_lookup_samplerobj(ctx, samp->Name)) {
-            v->value_int = samp->Name;
-         } else {
-            v->value_int = 0;
-         }
+         v->value_int = samp ? samp->Name : 0;
       }
       break;
    /* GL_ARB_uniform_buffer_object */
    case GL_UNIFORM_BUFFER_BINDING:
       v->value_int = ctx->UniformBuffer->Name;
+      break;
+   /* GL_ARB_shader_storage_buffer_object */
+   case GL_SHADER_STORAGE_BUFFER_BINDING:
+      v->value_int = ctx->ShaderStorageBuffer->Name;
       break;
    /* GL_ARB_timer_query */
    case GL_TIMESTAMP:
@@ -1079,6 +1039,10 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       } else {
          v->value_int = 0;
       }
+      break;
+   /* GL_ARB_compute_shader */
+   case GL_DISPATCH_INDIRECT_BUFFER_BINDING:
+      v->value_int = ctx->DispatchIndirectBuffer->Name;
       break;
    }
 }
@@ -1968,7 +1932,8 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 	 goto invalid_value;
       if (!ctx->Extensions.ARB_uniform_buffer_object)
 	 goto invalid_enum;
-      v->value_int = ctx->UniformBufferBindings[index].Offset;
+      v->value_int = ctx->UniformBufferBindings[index].Offset < 0 ? 0 :
+                     ctx->UniformBufferBindings[index].Offset;
       return TYPE_INT;
 
    case GL_UNIFORM_BUFFER_SIZE:
@@ -1976,7 +1941,35 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 	 goto invalid_value;
       if (!ctx->Extensions.ARB_uniform_buffer_object)
 	 goto invalid_enum;
-      v->value_int = ctx->UniformBufferBindings[index].Size;
+      v->value_int = ctx->UniformBufferBindings[index].Size < 0 ? 0 :
+                     ctx->UniformBufferBindings[index].Size;
+      return TYPE_INT;
+
+   /* ARB_shader_storage_buffer_object */
+   case GL_SHADER_STORAGE_BUFFER_BINDING:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].BufferObject->Name;
+      return TYPE_INT;
+
+   case GL_SHADER_STORAGE_BUFFER_START:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].Offset < 0 ? 0 :
+                     ctx->ShaderStorageBufferBindings[index].Offset;
+      return TYPE_INT;
+
+   case GL_SHADER_STORAGE_BUFFER_SIZE:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].Size < 0 ? 0 :
+                     ctx->ShaderStorageBufferBindings[index].Size;
       return TYPE_INT;
 
    /* ARB_texture_multisample / GL3.2 */
@@ -2013,7 +2006,8 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT64;
 
    case GL_VERTEX_BINDING_DIVISOR:
-      if (!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_instanced_arrays)
+      if ((!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_instanced_arrays) &&
+          !_mesa_is_gles31(ctx))
           goto invalid_enum;
       if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
           goto invalid_value;
@@ -2021,7 +2015,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_VERTEX_BINDING_OFFSET:
-      if (!_mesa_is_desktop_gl(ctx))
+      if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
           goto invalid_enum;
       if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
           goto invalid_value;
@@ -2029,11 +2023,19 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_VERTEX_BINDING_STRIDE:
-      if (!_mesa_is_desktop_gl(ctx))
+      if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
           goto invalid_enum;
       if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
           goto invalid_value;
       v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].Stride;
+      return TYPE_INT;
+
+   case GL_VERTEX_BINDING_BUFFER:
+      if (ctx->API == API_OPENGLES2 && ctx->Version < 31)
+         goto invalid_enum;
+      if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
+         goto invalid_value;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].BufferObj->Name;
       return TYPE_INT;
 
    /* ARB_shader_image_load_store */
@@ -2135,7 +2137,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
    }
 
    case GL_MAX_COMPUTE_WORK_GROUP_COUNT:
-      if (!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_compute_shader)
+      if (!_mesa_has_compute_shaders(ctx))
          goto invalid_enum;
       if (index >= 3)
          goto invalid_value;
@@ -2143,7 +2145,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
-      if (!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_compute_shader)
+      if (!_mesa_has_compute_shaders(ctx))
          goto invalid_enum;
       if (index >= 3)
          goto invalid_value;

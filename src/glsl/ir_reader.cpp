@@ -26,7 +26,7 @@
 #include "glsl_types.h"
 #include "s_expression.h"
 
-const static bool debug = false;
+static const bool debug = false;
 
 namespace {
 
@@ -93,7 +93,7 @@ ir_reader::read(exec_list *instructions, const char *src, bool scan_for_protos)
       ir_read_error(NULL, "couldn't parse S-Expression.");
       return;
    }
-   
+
    if (scan_for_protos) {
       scan_for_prototypes(instructions, expr);
       if (state->error)
@@ -147,7 +147,7 @@ ir_reader::read_type(s_expression *expr)
 
       return glsl_type::get_array_instance(base_type, s_size->value());
    }
-   
+
    s_symbol *type_sym = SX_AS_SYMBOL(expr);
    if (type_sym == NULL) {
       ir_read_error(expr, "expected <type>");
@@ -960,6 +960,8 @@ ir_reader::read_texture(s_expression *expr)
       { "tg4", s_type, s_sampler, s_coord, s_offset, s_component };
    s_pattern query_levels_pattern[] =
       { "query_levels", s_type, s_sampler };
+   s_pattern texture_samples_pattern[] =
+      { "samples", s_type, s_sampler };
    s_pattern other_pattern[] =
       { tag, s_type, s_sampler, s_coord, s_offset, s_proj, s_shadow, s_lod };
 
@@ -977,6 +979,8 @@ ir_reader::read_texture(s_expression *expr)
       op = ir_tg4;
    } else if (MATCH(expr, query_levels_pattern)) {
       op = ir_query_levels;
+   } else if (MATCH(expr, texture_samples_pattern)) {
+      op = ir_texture_samples;
    } else if (MATCH(expr, other_pattern)) {
       op = ir_texture::get_opcode(tag->value());
       if (op == (ir_texture_opcode) -1)
@@ -1029,7 +1033,7 @@ ir_reader::read_texture(s_expression *expr)
 
    if (op != ir_txf && op != ir_txf_ms &&
        op != ir_txs && op != ir_lod && op != ir_tg4 &&
-       op != ir_query_levels) {
+       op != ir_query_levels && op != ir_texture_samples) {
       s_int *proj_as_int = SX_AS_INT(s_proj);
       if (proj_as_int && proj_as_int->value() == 1) {
 	 tex->projector = NULL;

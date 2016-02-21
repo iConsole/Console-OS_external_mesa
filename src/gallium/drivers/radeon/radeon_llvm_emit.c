@@ -123,8 +123,6 @@ LLVMTargetRef radeon_llvm_get_r600_target(const char *triple)
 	return target;
 }
 
-#if HAVE_LLVM >= 0x0305
-
 static void radeonDiagnosticHandler(LLVMDiagnosticInfoRef di, void *context)
 {
 	if (LLVMGetDiagInfoSeverity(di) == LLVMDSError) {
@@ -136,8 +134,6 @@ static void radeonDiagnosticHandler(LLVMDiagnosticInfoRef di, void *context)
 		LLVMDisposeMessage(diaginfo_message);
 	}
 }
-
-#endif
 
 /**
  * Compile an LLVM module to machine code.
@@ -181,9 +177,7 @@ unsigned radeon_llvm_compile(LLVMModuleRef M, struct radeon_shader_binary *binar
 	/* Setup Diagnostic Handler*/
 	llvm_ctx = LLVMGetModuleContext(M);
 
-#if HAVE_LLVM >= 0x0305
 	LLVMContextSetDiagnosticHandler(llvm_ctx, radeonDiagnosticHandler, &rval);
-#endif
 	rval = 0;
 
 	/* Compile IR*/
@@ -194,8 +188,8 @@ unsigned radeon_llvm_compile(LLVMModuleRef M, struct radeon_shader_binary *binar
 	if (mem_err) {
 		fprintf(stderr, "%s: %s", __FUNCTION__, err);
 		FREE(err);
-		LLVMDisposeTargetMachine(tm);
-		return 1;
+		rval = 1;
+		goto out;
 	}
 
 	if (0 != rval) {
@@ -211,6 +205,7 @@ unsigned radeon_llvm_compile(LLVMModuleRef M, struct radeon_shader_binary *binar
 	/* Clean up */
 	LLVMDisposeMemoryBuffer(out_buffer);
 
+out:
 	if (dispose_tm) {
 		LLVMDisposeTargetMachine(tm);
 	}

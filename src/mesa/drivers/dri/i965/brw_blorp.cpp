@@ -26,10 +26,7 @@
 #include "intel_fbo.h"
 
 #include "brw_blorp.h"
-#include "brw_defines.h"
 #include "brw_state.h"
-#include "gen6_blorp.h"
-#include "gen7_blorp.h"
 
 #define FILE_DEBUG_FLAG DEBUG_BLORP
 
@@ -144,7 +141,9 @@ brw_blorp_surface_info::compute_tile_offsets(uint32_t *tile_x,
 {
    uint32_t mask_x, mask_y;
 
-   intel_miptree_get_tile_masks(mt, &mask_x, &mask_y, map_stencil_as_y_tiled);
+   intel_get_tile_masks(mt->tiling, mt->tr_mode, mt->cpp,
+                        map_stencil_as_y_tiled,
+                        &mask_x, &mask_y);
 
    *tile_x = x_offset & mask_x;
    *tile_y = y_offset & mask_y;

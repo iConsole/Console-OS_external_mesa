@@ -64,6 +64,7 @@ struct tgsi_shader_info
    uint file_count[TGSI_FILE_COUNT];  /**< number of declared registers */
    int file_max[TGSI_FILE_COUNT];  /**< highest index of declared registers */
    int const_file_max[PIPE_MAX_CONSTANT_BUFFERS];
+   unsigned samplers_declared; /**< bitmask of declared samplers */
 
    ubyte input_array_first[PIPE_MAX_SHADER_INPUTS];
    ubyte input_array_last[PIPE_MAX_SHADER_INPUTS];
@@ -76,13 +77,25 @@ struct tgsi_shader_info
 
    uint opcode_count[TGSI_OPCODE_LAST];  /**< opcode histogram */
 
+   ubyte colors_written;
    boolean reads_position; /**< does fragment shader read position? */
    boolean reads_z; /**< does fragment shader read depth? */
    boolean writes_z;  /**< does fragment shader write Z value? */
    boolean writes_stencil; /**< does fragment shader write stencil value? */
    boolean writes_edgeflag; /**< vertex shader outputs edgeflag */
    boolean uses_kill;  /**< KILL or KILL_IF instruction used? */
-   boolean uses_centroid;
+   boolean uses_persp_center;
+   boolean uses_persp_centroid;
+   boolean uses_persp_sample;
+   boolean uses_linear_center;
+   boolean uses_linear_centroid;
+   boolean uses_linear_sample;
+   boolean uses_persp_opcode_interp_centroid;
+   boolean uses_persp_opcode_interp_offset;
+   boolean uses_persp_opcode_interp_sample;
+   boolean uses_linear_opcode_interp_centroid;
+   boolean uses_linear_opcode_interp_offset;
+   boolean uses_linear_opcode_interp_sample;
    boolean uses_instanceid;
    boolean uses_vertexid;
    boolean uses_vertexid_nobase;
@@ -95,7 +108,7 @@ struct tgsi_shader_info
    boolean writes_viewport_index;
    boolean writes_layer;
    boolean is_msaa_sampler[PIPE_MAX_SAMPLERS];
-
+   boolean uses_doubles; /**< uses any of the double instructions */
    unsigned clipdist_writemask;
    unsigned culldist_writemask;
    unsigned num_written_culldistance;
@@ -113,6 +126,11 @@ struct tgsi_shader_info
    unsigned indirect_files_written;
 
    unsigned properties[TGSI_PROPERTY_COUNT]; /* index with TGSI_PROPERTY_ */
+
+   /**
+    * Max nesting limit of loops/if's
+    */
+   unsigned max_depth;
 };
 
 extern void

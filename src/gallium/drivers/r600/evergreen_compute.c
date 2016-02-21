@@ -233,11 +233,11 @@ void *evergreen_create_compute_state(
 							shader->bc.ndw * 4);
 	p = r600_buffer_map_sync_with_rings(&ctx->b, shader->code_bo, PIPE_TRANSFER_WRITE);
 	memcpy(p, shader->bc.bytecode, shader->bc.ndw * 4);
-	ctx->b.ws->buffer_unmap(shader->code_bo->cs_buf);
+	ctx->b.ws->buffer_unmap(shader->code_bo->buf);
 #endif
 #endif
 
-	shader->ctx = (struct r600_context*)ctx;
+	shader->ctx = ctx;
 	shader->local_size = cso->req_local_mem;
 	shader->private_size = cso->req_private_mem;
 	shader->input_size = cso->req_input_mem;
@@ -346,7 +346,7 @@ static void evergreen_emit_direct_dispatch(
 		const uint *block_layout, const uint *grid_layout)
 {
 	int i;
-	struct radeon_winsys_cs *cs = rctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	struct r600_pipe_compute *shader = rctx->cs_shader_state.shader;
 	unsigned num_waves;
 	unsigned num_pipes = rctx->screen->b.info.r600_max_pipes;
@@ -379,17 +379,17 @@ static void evergreen_emit_direct_dispatch(
 				"allocating %u dwords lds.\n",
 				num_pipes, num_waves, lds_size);
 
-	r600_write_config_reg(cs, R_008970_VGT_NUM_INDICES, group_size);
+	radeon_set_config_reg(cs, R_008970_VGT_NUM_INDICES, group_size);
 
-	r600_write_config_reg_seq(cs, R_00899C_VGT_COMPUTE_START_X, 3);
+	radeon_set_config_reg_seq(cs, R_00899C_VGT_COMPUTE_START_X, 3);
 	radeon_emit(cs, 0); /* R_00899C_VGT_COMPUTE_START_X */
 	radeon_emit(cs, 0); /* R_0089A0_VGT_COMPUTE_START_Y */
 	radeon_emit(cs, 0); /* R_0089A4_VGT_COMPUTE_START_Z */
 
-	r600_write_config_reg(cs, R_0089AC_VGT_COMPUTE_THREAD_GROUP_SIZE,
+	radeon_set_config_reg(cs, R_0089AC_VGT_COMPUTE_THREAD_GROUP_SIZE,
 								group_size);
 
-	r600_write_compute_context_reg_seq(cs, R_0286EC_SPI_COMPUTE_NUM_THREAD_X, 3);
+	radeon_compute_set_context_reg_seq(cs, R_0286EC_SPI_COMPUTE_NUM_THREAD_X, 3);
 	radeon_emit(cs, block_layout[0]); /* R_0286EC_SPI_COMPUTE_NUM_THREAD_X */
 	radeon_emit(cs, block_layout[1]); /* R_0286F0_SPI_COMPUTE_NUM_THREAD_Y */
 	radeon_emit(cs, block_layout[2]); /* R_0286F4_SPI_COMPUTE_NUM_THREAD_Z */
@@ -402,7 +402,7 @@ static void evergreen_emit_direct_dispatch(
 		assert(lds_size <= 8160);
 	}
 
-	r600_write_compute_context_reg(cs, CM_R_0288E8_SQ_LDS_ALLOC,
+	radeon_compute_set_context_reg(cs, R_0288E8_SQ_LDS_ALLOC,
 					lds_size | (num_waves << 14));
 
 	/* Dispatch packet */
@@ -417,12 +417,12 @@ static void evergreen_emit_direct_dispatch(
 static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 		const uint *grid_layout)
 {
-	struct radeon_winsys_cs *cs = ctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = ctx->b.gfx.cs;
 	unsigned i;
 
 	/* make sure that the gfx ring is only one active */
-	if (ctx->b.rings.dma.cs && ctx->b.rings.dma.cs->cdw) {
-		ctx->b.rings.dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
+	if (ctx->b.dma.cs && ctx->b.dma.cs->cdw) {
+		ctx->b.dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
 	}
 
 	/* Initialize all the compute-related registers.
@@ -432,6 +432,10 @@ static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 	 */
 	r600_emit_command_buffer(cs, &ctx->start_compute_cs_cmd);
 
+	/* emit config state */
+	if (ctx->b.chip_class == EVERGREEN)
+		r600_emit_atom(ctx, &ctx->config_state.atom);
+
 	ctx->b.flags |= R600_CONTEXT_WAIT_3D_IDLE | R600_CONTEXT_FLUSH_AND_INV;
 	r600_flush_emit(ctx);
 
@@ -439,12 +443,12 @@ static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 	/* XXX support more than 8 colorbuffers (the offsets are not a multiple of 0x3C for CB8-11) */
 	for (i = 0; i < 8 && i < ctx->framebuffer.state.nr_cbufs; i++) {
 		struct r600_surface *cb = (struct r600_surface*)ctx->framebuffer.state.cbufs[i];
-		unsigned reloc = r600_context_bo_reloc(&ctx->b, &ctx->b.rings.gfx,
+		unsigned reloc = radeon_add_to_buffer_list(&ctx->b, &ctx->b.gfx,
 						       (struct r600_resource*)cb->base.texture,
 						       RADEON_USAGE_READWRITE,
-						       RADEON_PRIO_SHADER_RESOURCE_RW);
+						       RADEON_PRIO_SHADER_RW_BUFFER);
 
-		r600_write_compute_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 7);
+		radeon_compute_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 7);
 		radeon_emit(cs, cb->cb_color_base);	/* R_028C60_CB_COLOR0_BASE */
 		radeon_emit(cs, cb->cb_color_pitch);	/* R_028C64_CB_COLOR0_PITCH */
 		radeon_emit(cs, cb->cb_color_slice);	/* R_028C68_CB_COLOR0_SLICE */
@@ -466,17 +470,17 @@ static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 	}
 	if (ctx->keep_tiling_flags) {
 		for (; i < 8 ; i++) {
-			r600_write_compute_context_reg(cs, R_028C70_CB_COLOR0_INFO + i * 0x3C,
+			radeon_compute_set_context_reg(cs, R_028C70_CB_COLOR0_INFO + i * 0x3C,
 						       S_028C70_FORMAT(V_028C70_COLOR_INVALID));
 		}
 		for (; i < 12; i++) {
-			r600_write_compute_context_reg(cs, R_028E50_CB_COLOR8_INFO + (i - 8) * 0x1C,
+			radeon_compute_set_context_reg(cs, R_028E50_CB_COLOR8_INFO + (i - 8) * 0x1C,
 						       S_028C70_FORMAT(V_028C70_COLOR_INVALID));
 		}
 	}
 
 	/* Set CB_TARGET_MASK  XXX: Use cb_misc_state */
-	r600_write_compute_context_reg(cs, R_028238_CB_TARGET_MASK,
+	radeon_compute_set_context_reg(cs, R_028238_CB_TARGET_MASK,
 					ctx->compute_cb_target_mask);
 
 
@@ -538,7 +542,7 @@ void evergreen_emit_cs_shader(
 	struct r600_cs_shader_state *state =
 					(struct r600_cs_shader_state*)atom;
 	struct r600_pipe_compute *shader = state->shader;
-	struct radeon_winsys_cs *cs = rctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	uint64_t va;
 	struct r600_resource *code_bo;
 	unsigned ngpr, nstack;
@@ -556,7 +560,7 @@ void evergreen_emit_cs_shader(
 	nstack = shader->bc.nstack;
 #endif
 
-	r600_write_compute_context_reg_seq(cs, R_0288D0_SQ_PGM_START_LS, 3);
+	radeon_compute_set_context_reg_seq(cs, R_0288D0_SQ_PGM_START_LS, 3);
 	radeon_emit(cs, va >> 8); /* R_0288D0_SQ_PGM_START_LS */
 	radeon_emit(cs,           /* R_0288D4_SQ_PGM_RESOURCES_LS */
 			S_0288D4_NUM_GPRS(ngpr)
@@ -564,9 +568,9 @@ void evergreen_emit_cs_shader(
 	radeon_emit(cs, 0);	/* R_0288D8_SQ_PGM_RESOURCES_LS_2 */
 
 	radeon_emit(cs, PKT3C(PKT3_NOP, 0, 0));
-	radeon_emit(cs, r600_context_bo_reloc(&rctx->b, &rctx->b.rings.gfx,
+	radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
 					      code_bo, RADEON_USAGE_READ,
-					      RADEON_PRIO_SHADER_DATA));
+					      RADEON_PRIO_USER_SHADER));
 }
 
 static void evergreen_launch_grid(
@@ -609,7 +613,7 @@ static void evergreen_launch_grid(
                                                         kernel->bc.ndw * 4);
                 p = r600_buffer_map_sync_with_rings(&ctx->b, kernel->code_bo, PIPE_TRANSFER_WRITE);
                 memcpy(p, kernel->bc.bytecode, kernel->bc.ndw * 4);
-                ctx->b.ws->buffer_unmap(kernel->code_bo->cs_buf);
+                ctx->b.ws->buffer_unmap(kernel->code_bo->buf);
         }
 	shader->active_kernel = kernel;
 	ctx->cs_shader_state.kernel_index = pc;
@@ -791,7 +795,7 @@ void evergreen_init_atom_start_compute_cs(struct r600_context *ctx)
 
 	/* Config Registers */
 	if (ctx->b.chip_class < CAYMAN)
-		evergreen_init_common_regs(cb, ctx->b.chip_class, ctx->b.family,
+		evergreen_init_common_regs(ctx, cb, ctx->b.chip_class, ctx->b.family,
 					   ctx->screen->b.info.drm_minor);
 	else
 		cayman_init_common_regs(cb, ctx->b.chip_class, ctx->b.family,
@@ -997,7 +1001,7 @@ void *r600_compute_global_transfer_map(
 	}
 	else {
 		if (item->real_buffer == NULL) {
-			item->real_buffer = (struct r600_resource*)
+			item->real_buffer =
 					r600_compute_buffer_alloc_vram(pool->screen, item->size_in_dw * 4);
 		}
 	}

@@ -37,103 +37,17 @@
 struct lower_io_state {
    nir_builder builder;
    void *mem_ctx;
-   bool is_scalar;
+   int (*type_size)(const struct glsl_type *type);
+   nir_variable_mode mode;
 };
 
-static int
-type_size_vec4(const struct glsl_type *type)
-{
-   unsigned int i;
-   int size;
-
-   switch (glsl_get_base_type(type)) {
-   case GLSL_TYPE_UINT:
-   case GLSL_TYPE_INT:
-   case GLSL_TYPE_FLOAT:
-   case GLSL_TYPE_BOOL:
-      if (glsl_type_is_matrix(type)) {
-         return glsl_get_matrix_columns(type);
-      } else {
-         return 1;
-      }
-   case GLSL_TYPE_ARRAY:
-      return type_size_vec4(glsl_get_array_element(type)) * glsl_get_length(type);
-   case GLSL_TYPE_STRUCT:
-      size = 0;
-      for (i = 0; i <  glsl_get_length(type); i++) {
-         size += type_size_vec4(glsl_get_struct_field(type, i));
-      }
-      return size;
-   case GLSL_TYPE_SUBROUTINE:
-      return 1;
-   case GLSL_TYPE_SAMPLER:
-      return 0;
-   case GLSL_TYPE_ATOMIC_UINT:
-      return 0;
-   case GLSL_TYPE_IMAGE:
-   case GLSL_TYPE_VOID:
-   case GLSL_TYPE_DOUBLE:
-   case GLSL_TYPE_ERROR:
-   case GLSL_TYPE_INTERFACE:
-      unreachable("not reached");
-   }
-
-   return 0;
-}
-
-static unsigned
-type_size_scalar(const struct glsl_type *type)
-{
-   unsigned int size, i;
-
-   switch (glsl_get_base_type(type)) {
-   case GLSL_TYPE_UINT:
-   case GLSL_TYPE_INT:
-   case GLSL_TYPE_FLOAT:
-   case GLSL_TYPE_BOOL:
-      return glsl_get_components(type);
-   case GLSL_TYPE_ARRAY:
-      return type_size_scalar(glsl_get_array_element(type)) * glsl_get_length(type);
-   case GLSL_TYPE_STRUCT:
-      size = 0;
-      for (i = 0; i < glsl_get_length(type); i++) {
-         size += type_size_scalar(glsl_get_struct_field(type, i));
-      }
-      return size;
-   case GLSL_TYPE_SUBROUTINE:
-      return 1;
-   case GLSL_TYPE_SAMPLER:
-      return 0;
-   case GLSL_TYPE_ATOMIC_UINT:
-      return 0;
-   case GLSL_TYPE_INTERFACE:
-      return 0;
-   case GLSL_TYPE_IMAGE:
-      return 0;
-   case GLSL_TYPE_VOID:
-   case GLSL_TYPE_ERROR:
-   case GLSL_TYPE_DOUBLE:
-      unreachable("not reached");
-   }
-
-   return 0;
-}
-
-static unsigned
-type_size(const struct glsl_type *type, bool is_scalar)
-{
-   if (is_scalar)
-      return type_size_scalar(type);
-   else
-      return type_size_vec4(type);
-}
-
 void
-nir_assign_var_locations(struct exec_list *var_list, unsigned *size, bool is_scalar)
+nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
+                         int (*type_size)(const struct glsl_type *))
 {
    unsigned location = 0;
 
-   foreach_list_typed(nir_variable, var, node, var_list) {
+   nir_foreach_variable(var, var_list) {
       /*
        * UBO's have their own address spaces, so don't count them towards the
        * number of global uniforms
@@ -143,159 +57,108 @@ nir_assign_var_locations(struct exec_list *var_list, unsigned *size, bool is_sca
          continue;
 
       var->data.driver_location = location;
-      location += type_size(var->type, is_scalar);
+      location += type_size(var->type);
    }
 
    *size = location;
 }
 
-static bool
-deref_has_indirect(nir_deref_var *deref)
-{
-   for (nir_deref *tail = deref->deref.child; tail; tail = tail->child) {
-      if (tail->deref_type == nir_deref_type_array) {
-         nir_deref_array *arr = nir_deref_as_array(tail);
-         if (arr->deref_array_type == nir_deref_array_type_indirect)
-            return true;
-      }
-   }
-
-   return false;
-}
-
-static bool
-mark_indirect_uses_block(nir_block *block, void *void_state)
-{
-   struct set *indirect_set = void_state;
-
-   nir_foreach_instr(block, instr) {
-      if (instr->type != nir_instr_type_intrinsic)
-         continue;
-
-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-
-      for (unsigned i = 0;
-           i < nir_intrinsic_infos[intrin->intrinsic].num_variables; i++) {
-         if (deref_has_indirect(intrin->variables[i]))
-            _mesa_set_add(indirect_set, intrin->variables[i]->var);
-      }
-   }
-
-   return true;
-}
-
-/* Identical to nir_assign_var_locations_packed except that it assigns
- * locations to the variables that are used 100% directly first and then
- * assigns locations to variables that are used indirectly.
+/**
+ * Returns true if we're processing a stage whose inputs are arrays indexed
+ * by a vertex number (such as geometry shader inputs).
  */
-void
-nir_assign_var_locations_direct_first(nir_shader *shader,
-                                      struct exec_list *var_list,
-                                      unsigned *direct_size,
-                                      unsigned *size,
-                                      bool is_scalar)
+static bool
+is_per_vertex_input(struct lower_io_state *state, nir_variable *var)
 {
-   struct set *indirect_set = _mesa_set_create(NULL, _mesa_hash_pointer,
-                                               _mesa_key_pointer_equal);
+   gl_shader_stage stage = state->builder.shader->stage;
 
-   nir_foreach_overload(shader, overload) {
-      if (overload->impl)
-         nir_foreach_block(overload->impl, mark_indirect_uses_block,
-                           indirect_set);
-   }
-
-   unsigned location = 0;
-
-   foreach_list_typed(nir_variable, var, node, var_list) {
-      if ((var->data.mode == nir_var_uniform || var->data.mode == nir_var_shader_storage) &&
-          var->interface_type != NULL)
-         continue;
-
-      if (_mesa_set_search(indirect_set, var))
-         continue;
-
-      var->data.driver_location = location;
-      location += type_size(var->type, is_scalar);
-   }
-
-   *direct_size = location;
-
-   foreach_list_typed(nir_variable, var, node, var_list) {
-      if ((var->data.mode == nir_var_uniform || var->data.mode == nir_var_shader_storage) &&
-          var->interface_type != NULL)
-         continue;
-
-      if (!_mesa_set_search(indirect_set, var))
-         continue;
-
-      var->data.driver_location = location;
-      location += type_size(var->type, is_scalar);
-   }
-
-   *size = location;
-
-   _mesa_set_destroy(indirect_set, NULL);
+   return var->data.mode == nir_var_shader_in && !var->data.patch &&
+          (stage == MESA_SHADER_TESS_CTRL ||
+           stage == MESA_SHADER_TESS_EVAL ||
+           stage == MESA_SHADER_GEOMETRY);
 }
 
-static unsigned
-get_io_offset(nir_deref_var *deref, nir_instr *instr, nir_src *indirect,
-              struct lower_io_state *state)
+static bool
+is_per_vertex_output(struct lower_io_state *state, nir_variable *var)
 {
-   bool found_indirect = false;
-   unsigned base_offset = 0;
+   gl_shader_stage stage = state->builder.shader->stage;
+   return var->data.mode == nir_var_shader_out && !var->data.patch &&
+          stage == MESA_SHADER_TESS_CTRL;
+}
 
-   nir_builder *b = &state->builder;
-   nir_builder_insert_before_instr(b, instr);
-
+static nir_ssa_def *
+get_io_offset(nir_builder *b, nir_deref_var *deref,
+              nir_ssa_def **vertex_index,
+              int (*type_size)(const struct glsl_type *))
+{
    nir_deref *tail = &deref->deref;
+
+   /* For per-vertex input arrays (i.e. geometry shader inputs), keep the
+    * outermost array index separate.  Process the rest normally.
+    */
+   if (vertex_index != NULL) {
+      tail = tail->child;
+      assert(tail->deref_type == nir_deref_type_array);
+      nir_deref_array *deref_array = nir_deref_as_array(tail);
+
+      nir_ssa_def *vtx = nir_imm_int(b, deref_array->base_offset);
+      if (deref_array->deref_array_type == nir_deref_array_type_indirect) {
+         vtx = nir_iadd(b, vtx, nir_ssa_for_src(b, deref_array->indirect, 1));
+      }
+      *vertex_index = vtx;
+   }
+
+   /* Just emit code and let constant-folding go to town */
+   nir_ssa_def *offset = nir_imm_int(b, 0);
+
    while (tail->child != NULL) {
       const struct glsl_type *parent_type = tail->type;
       tail = tail->child;
 
       if (tail->deref_type == nir_deref_type_array) {
          nir_deref_array *deref_array = nir_deref_as_array(tail);
-         unsigned size = type_size(tail->type, state->is_scalar);
+         unsigned size = type_size(tail->type);
 
-         base_offset += size * deref_array->base_offset;
+         offset = nir_iadd(b, offset,
+                           nir_imm_int(b, size * deref_array->base_offset));
 
          if (deref_array->deref_array_type == nir_deref_array_type_indirect) {
             nir_ssa_def *mul =
                nir_imul(b, nir_imm_int(b, size),
                         nir_ssa_for_src(b, deref_array->indirect, 1));
 
-            if (found_indirect) {
-               indirect->ssa =
-                  nir_iadd(b, nir_ssa_for_src(b, *indirect, 1), mul);
-            } else {
-               indirect->ssa = mul;
-            }
-            indirect->is_ssa = true;
-            found_indirect = true;
+            offset = nir_iadd(b, offset, mul);
          }
       } else if (tail->deref_type == nir_deref_type_struct) {
          nir_deref_struct *deref_struct = nir_deref_as_struct(tail);
 
-         for (unsigned i = 0; i < deref_struct->index; i++)
-            base_offset += type_size(glsl_get_struct_field(parent_type, i),
-                                     state->is_scalar);
+         unsigned field_offset = 0;
+         for (unsigned i = 0; i < deref_struct->index; i++) {
+            field_offset += type_size(glsl_get_struct_field(parent_type, i));
+         }
+         offset = nir_iadd(b, offset, nir_imm_int(b, field_offset));
       }
    }
 
-   return base_offset;
+   return offset;
 }
 
 static nir_intrinsic_op
-load_op(nir_variable_mode mode, bool has_indirect)
+load_op(struct lower_io_state *state,
+        nir_variable_mode mode, bool per_vertex)
 {
    nir_intrinsic_op op;
    switch (mode) {
    case nir_var_shader_in:
-      op = has_indirect ? nir_intrinsic_load_input_indirect :
-                          nir_intrinsic_load_input;
+      op = per_vertex ? nir_intrinsic_load_per_vertex_input :
+                        nir_intrinsic_load_input;
+      break;
+   case nir_var_shader_out:
+      op = per_vertex ? nir_intrinsic_load_per_vertex_output :
+                        nir_intrinsic_load_output;
       break;
    case nir_var_uniform:
-      op = has_indirect ? nir_intrinsic_load_uniform_indirect :
-                          nir_intrinsic_load_uniform;
+      op = nir_intrinsic_load_uniform;
       break;
    default:
       unreachable("Unknown variable mode");
@@ -308,41 +171,61 @@ nir_lower_io_block(nir_block *block, void *void_state)
 {
    struct lower_io_state *state = void_state;
 
+   nir_builder *b = &state->builder;
+
    nir_foreach_instr_safe(block, instr) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
 
+      if (intrin->intrinsic != nir_intrinsic_load_var &&
+          intrin->intrinsic != nir_intrinsic_store_var)
+         continue;
+
+      nir_variable_mode mode = intrin->variables[0]->var->data.mode;
+
+      if (state->mode != nir_var_all && state->mode != mode)
+         continue;
+
+      if (mode != nir_var_shader_in &&
+          mode != nir_var_shader_out &&
+          mode != nir_var_uniform)
+         continue;
+
+      b->cursor = nir_before_instr(instr);
+
       switch (intrin->intrinsic) {
       case nir_intrinsic_load_var: {
-         nir_variable_mode mode = intrin->variables[0]->var->data.mode;
-         if (mode != nir_var_shader_in && mode != nir_var_uniform)
-            continue;
+         bool per_vertex =
+            is_per_vertex_input(state, intrin->variables[0]->var) ||
+            is_per_vertex_output(state, intrin->variables[0]->var);
 
-         bool has_indirect = deref_has_indirect(intrin->variables[0]);
+         nir_ssa_def *offset;
+         nir_ssa_def *vertex_index;
+
+         offset = get_io_offset(b, intrin->variables[0],
+                                per_vertex ? &vertex_index : NULL,
+                                state->type_size);
 
          nir_intrinsic_instr *load =
             nir_intrinsic_instr_create(state->mem_ctx,
-                                       load_op(mode, has_indirect));
+                                       load_op(state, mode, per_vertex));
          load->num_components = intrin->num_components;
 
-         nir_src indirect;
-         unsigned offset = get_io_offset(intrin->variables[0],
-                                         &intrin->instr, &indirect, state);
-         offset += intrin->variables[0]->var->data.driver_location;
+         load->const_index[0] =
+            intrin->variables[0]->var->data.driver_location;
 
-         load->const_index[0] = offset;
+         if (per_vertex)
+            load->src[0] = nir_src_for_ssa(vertex_index);
 
-         if (has_indirect)
-            load->src[0] = indirect;
+         load->src[per_vertex ? 1 : 0] = nir_src_for_ssa(offset);
 
          if (intrin->dest.is_ssa) {
             nir_ssa_dest_init(&load->instr, &load->dest,
                               intrin->num_components, NULL);
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     nir_src_for_ssa(&load->dest.ssa),
-                                     state->mem_ctx);
+                                     nir_src_for_ssa(&load->dest.ssa));
          } else {
             nir_dest_copy(&load->dest, &intrin->dest, state->mem_ctx);
          }
@@ -353,33 +236,38 @@ nir_lower_io_block(nir_block *block, void *void_state)
       }
 
       case nir_intrinsic_store_var: {
-         if (intrin->variables[0]->var->data.mode != nir_var_shader_out)
-            continue;
+         assert(mode == nir_var_shader_out);
 
-         bool has_indirect = deref_has_indirect(intrin->variables[0]);
+         nir_ssa_def *offset;
+         nir_ssa_def *vertex_index;
 
-         nir_intrinsic_op store_op;
-         if (has_indirect) {
-            store_op = nir_intrinsic_store_output_indirect;
-         } else {
-            store_op = nir_intrinsic_store_output;
-         }
+         bool per_vertex =
+            is_per_vertex_output(state, intrin->variables[0]->var);
+
+         offset = get_io_offset(b, intrin->variables[0],
+                                per_vertex ? &vertex_index : NULL,
+                                state->type_size);
+
+         nir_intrinsic_op store_op =
+            per_vertex ? nir_intrinsic_store_per_vertex_output :
+                         nir_intrinsic_store_output;
 
          nir_intrinsic_instr *store = nir_intrinsic_instr_create(state->mem_ctx,
                                                                  store_op);
          store->num_components = intrin->num_components;
 
-         nir_src indirect;
-         unsigned offset = get_io_offset(intrin->variables[0],
-                                         &intrin->instr, &indirect, state);
-         offset += intrin->variables[0]->var->data.driver_location;
-
-         store->const_index[0] = offset;
-
          nir_src_copy(&store->src[0], &intrin->src[0], store);
 
-         if (has_indirect)
-            store->src[1] = indirect;
+         store->const_index[0] =
+            intrin->variables[0]->var->data.driver_location;
+
+         /* Copy the writemask */
+         store->const_index[1] = intrin->const_index[0];
+
+         if (per_vertex)
+            store->src[1] = nir_src_for_ssa(vertex_index);
+
+         store->src[per_vertex ? 2 : 1] = nir_src_for_ssa(offset);
 
          nir_instr_insert_before(&intrin->instr, &store->instr);
          nir_instr_remove(&intrin->instr);
@@ -395,13 +283,16 @@ nir_lower_io_block(nir_block *block, void *void_state)
 }
 
 static void
-nir_lower_io_impl(nir_function_impl *impl, bool is_scalar)
+nir_lower_io_impl(nir_function_impl *impl,
+                  nir_variable_mode mode,
+                  int (*type_size)(const struct glsl_type *))
 {
    struct lower_io_state state;
 
    nir_builder_init(&state.builder, impl);
    state.mem_ctx = ralloc_parent(impl);
-   state.is_scalar = is_scalar;
+   state.mode = mode;
+   state.type_size = type_size;
 
    nir_foreach_block(impl, nir_lower_io_block, &state);
 
@@ -410,10 +301,50 @@ nir_lower_io_impl(nir_function_impl *impl, bool is_scalar)
 }
 
 void
-nir_lower_io(nir_shader *shader, bool is_scalar)
+nir_lower_io(nir_shader *shader, nir_variable_mode mode,
+             int (*type_size)(const struct glsl_type *))
 {
    nir_foreach_overload(shader, overload) {
       if (overload->impl)
-         nir_lower_io_impl(overload->impl, is_scalar);
+         nir_lower_io_impl(overload->impl, mode, type_size);
+   }
+}
+
+/**
+ * Return the offset soruce for a load/store intrinsic.
+ */
+nir_src *
+nir_get_io_offset_src(nir_intrinsic_instr *instr)
+{
+   switch (instr->intrinsic) {
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_output:
+   case nir_intrinsic_load_uniform:
+      return &instr->src[0];
+   case nir_intrinsic_load_per_vertex_input:
+   case nir_intrinsic_load_per_vertex_output:
+   case nir_intrinsic_store_output:
+      return &instr->src[1];
+   case nir_intrinsic_store_per_vertex_output:
+      return &instr->src[2];
+   default:
+      return NULL;
+   }
+}
+
+/**
+ * Return the vertex index source for a load/store per_vertex intrinsic.
+ */
+nir_src *
+nir_get_io_vertex_index_src(nir_intrinsic_instr *instr)
+{
+   switch (instr->intrinsic) {
+   case nir_intrinsic_load_per_vertex_input:
+   case nir_intrinsic_load_per_vertex_output:
+      return &instr->src[0];
+   case nir_intrinsic_store_per_vertex_output:
+      return &instr->src[1];
+   default:
+      return NULL;
    }
 }

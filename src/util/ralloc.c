@@ -293,6 +293,7 @@ ralloc_adopt(const void *new_ctx, void *old_ctx)
 
    /* Connect the two lists together; parent them to new_ctx; make old_ctx empty. */
    child->next = new_info->child;
+   child->parent = new_info;
    new_info->child = old_info->child;
    old_info->child = NULL;
 }
@@ -359,10 +360,7 @@ ralloc_strndup(const void *ctx, const char *str, size_t max)
    if (unlikely(str == NULL))
       return NULL;
 
-   n = strlen(str);
-   if (n > max)
-      n = max;
-
+   n = strnlen(str, max);
    ptr = ralloc_array(ctx, char, n + 1);
    memcpy(ptr, str, n);
    ptr[n] = '\0';
@@ -502,6 +500,7 @@ ralloc_vasprintf_rewrite_tail(char **str, size_t *start, const char *fmt,
    if (unlikely(*str == NULL)) {
       // Assuming a NULL context is probably bad, but it's expected behavior.
       *str = ralloc_vasprintf(NULL, fmt, args);
+      *start = strlen(*str);
       return true;
    }
 

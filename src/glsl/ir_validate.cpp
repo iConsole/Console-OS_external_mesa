@@ -110,9 +110,10 @@ ir_validate::visit(ir_dereference_variable *ir)
 ir_visitor_status
 ir_validate::visit_enter(class ir_dereference_array *ir)
 {
-   if (!ir->array->type->is_array() && !ir->array->type->is_matrix()) {
-      printf("ir_dereference_array @ %p does not specify an array or a "
-             "matrix\n",
+   if (!ir->array->type->is_array() && !ir->array->type->is_matrix() &&
+      !ir->array->type->is_vector()) {
+      printf("ir_dereference_array @ %p does not specify an array, a vector "
+             "or a matrix\n",
              (void *) ir);
       ir->print();
       printf("\n");
@@ -319,11 +320,6 @@ ir_validate::visit_leave(ir_expression *ir)
       assert(ir->type->base_type == GLSL_TYPE_UINT);
       break;
 
-   case ir_unop_any:
-      assert(ir->operands[0]->type->base_type == GLSL_TYPE_BOOL);
-      assert(ir->type == glsl_type::bool_type);
-      break;
-
    case ir_unop_trunc:
    case ir_unop_round_even:
    case ir_unop_ceil:
@@ -407,6 +403,17 @@ ir_validate::visit_leave(ir_expression *ir)
    case ir_unop_interpolate_at_centroid:
       assert(ir->operands[0]->type == ir->type);
       assert(ir->operands[0]->type->is_float());
+      break;
+
+   case ir_unop_get_buffer_size:
+      assert(ir->type == glsl_type::int_type);
+      assert(ir->operands[0]->type == glsl_type::uint_type);
+      break;
+
+   case ir_unop_ssbo_unsized_array_length:
+      assert(ir->type == glsl_type::int_type);
+      assert(ir->operands[0]->type->is_array());
+      assert(ir->operands[0]->type->is_unsized_array());
       break;
 
    case ir_unop_d2f:

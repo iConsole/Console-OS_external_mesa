@@ -432,6 +432,8 @@ tfeedback_decl::assign_location(struct gl_context *ctx,
          this->matched_candidate->type->fields.array->matrix_columns;
       const unsigned vector_elements =
          this->matched_candidate->type->fields.array->vector_elements;
+      const unsigned dmul =
+         this->matched_candidate->type->fields.array->is_double() ? 2 : 1;
       unsigned actual_array_size;
       switch (this->lowered_builtin_array_variable) {
       case clip_distance:
@@ -459,7 +461,7 @@ tfeedback_decl::assign_location(struct gl_context *ctx,
             return false;
          }
          unsigned array_elem_size = this->lowered_builtin_array_variable ?
-            1 : vector_elements * matrix_cols;
+            1 : vector_elements * matrix_cols * dmul;
          fine_location += array_elem_size * this->array_subscript;
          this->size = 1;
       } else {
@@ -519,7 +521,6 @@ tfeedback_decl::get_num_outputs() const
    if (!this->is_varying()) {
       return 0;
    }
-
    return (this->num_components() + this->location_frac + 3)/4;
 }
 
@@ -766,7 +767,7 @@ public:
                    gl_shader_stage consumer_stage);
    ~varying_matches();
    void record(ir_variable *producer_var, ir_variable *consumer_var);
-   unsigned assign_locations();
+   unsigned assign_locations(uint64_t reserved_slots, bool separate_shader);
    void store_locations() const;
 
 private:
@@ -896,8 +897,10 @@ varying_matches::record(ir_variable *producer_var, ir_variable *consumer_var)
 {
    assert(producer_var != NULL || consumer_var != NULL);
 
-   if ((producer_var && !producer_var->data.is_unmatched_generic_inout)
-       || (consumer_var && !consumer_var->data.is_unmatched_generic_inout)) {
+   if ((producer_var && (!producer_var->data.is_unmatched_generic_inout ||
+       producer_var->data.explicit_location)) ||
+       (consumer_var && (!consumer_var->data.is_unmatched_generic_inout ||
+       consumer_var->data.explicit_location))) {
       /* Either a location already exists for this variable (since it is part
        * of fixed functionality), or it has already been recorded as part of a
        * previous match.
@@ -956,9 +959,18 @@ varying_matches::record(ir_variable *producer_var, ir_variable *consumer_var)
          type = type->fields.array;
       }
 
-      slots = (type->is_array()
-            ? (type->length * type->fields.array->matrix_columns)
-            : type->matrix_columns);
+      if (type->is_array()) {
+         slots = 1;
+         while (type->is_array()) {
+            slots *= type->length;
+            type = type->fields.array;
+         }
+         slots *= type->matrix_columns;
+      } else {
+         slots = type->matrix_columns;
+      }
+      if (type->without_array()->is_dual_slot_double())
+         slots *= 2;
       this->matches[this->num_matches].num_components = 4 * slots;
    } else {
       this->matches[this->num_matches].num_components
@@ -979,11 +991,36 @@ varying_matches::record(ir_variable *producer_var, ir_variable *consumer_var)
  * passed to varying_matches::record().
  */
 unsigned
-varying_matches::assign_locations()
+varying_matches::assign_locations(uint64_t reserved_slots, bool separate_shader)
 {
-   /* Sort varying matches into an order that makes them easy to pack. */
-   qsort(this->matches, this->num_matches, sizeof(*this->matches),
-         &varying_matches::match_comparator);
+   /* We disable varying sorting for separate shader programs for the
+    * following reasons:
+    *
+    * 1/ All programs must sort the code in the same order to guarantee the
+    *    interface matching. However varying_matches::record() will change the
+    *    interpolation qualifier of some stages.
+    *
+    * 2/ GLSL version 4.50 removes the matching constrain on the interpolation
+    *    qualifier.
+    *
+    * From Section 4.5 (Interpolation Qualifiers) of the GLSL 4.40 spec:
+    *
+    *    "The type and presence of interpolation qualifiers of variables with
+    *    the same name declared in all linked shaders for the same cross-stage
+    *    interface must match, otherwise the link command will fail.
+    *
+    *    When comparing an output from one stage to an input of a subsequent
+    *    stage, the input and output don't match if their interpolation
+    *    qualifiers (or lack thereof) are not the same."
+    *
+    *    "It is a link-time error if, within the same stage, the interpolation
+    *    qualifiers of variables of the same name do not match."
+    */
+   if (!separate_shader) {
+      /* Sort varying matches into an order that makes them easy to pack. */
+      qsort(this->matches, this->num_matches, sizeof(*this->matches),
+            &varying_matches::match_comparator);
+   }
 
    unsigned generic_location = 0;
    unsigned generic_patch_location = MAX_VARYING*4;
@@ -1005,6 +1042,10 @@ varying_matches::assign_locations()
           this->matches[i - 1].packing_class
           != this->matches[i].packing_class) {
          *location = ALIGN(*location, 4);
+      }
+      while ((*location < MAX_VARYING * 4u) &&
+            (reserved_slots & (1u << *location / 4u))) {
+         *location = ALIGN(*location + 1, 4);
       }
 
       this->matches[i].generic_location = *location;
@@ -1369,6 +1410,38 @@ canonicalize_shader_io(exec_list *ir, enum ir_variable_mode io_mode)
 }
 
 /**
+ * Generate a bitfield map of the explicit locations for shader varyings.
+ *
+ * In theory a 32 bits value will be enough but a 64 bits value is future proof.
+ */
+uint64_t
+reserved_varying_slot(struct gl_shader *stage, ir_variable_mode io_mode)
+{
+   assert(io_mode == ir_var_shader_in || io_mode == ir_var_shader_out);
+   assert(MAX_VARYING <= 64); /* avoid an overflow of the returned value */
+
+   uint64_t slots = 0;
+   int var_slot;
+
+   if (!stage)
+      return slots;
+
+   foreach_in_list(ir_instruction, node, stage->ir) {
+      ir_variable *const var = node->as_variable();
+
+      if (var == NULL || var->data.mode != io_mode || !var->data.explicit_location)
+         continue;
+
+      var_slot = var->data.location - VARYING_SLOT_VAR0;
+      if (var_slot >= 0 && var_slot < MAX_VARYING)
+         slots |= 1u << var_slot;
+   }
+
+   return slots;
+}
+
+
+/**
  * Assign locations for all variables that are produced in one pipeline stage
  * (the "producer") and consumed in the next stage (the "consumer").
  *
@@ -1543,7 +1616,12 @@ assign_varying_locations(struct gl_context *ctx,
          matches.record(matched_candidate->toplevel_var, NULL);
    }
 
-   const unsigned slots_used = matches.assign_locations();
+   const uint64_t reserved_slots =
+      reserved_varying_slot(producer, ir_var_shader_out) |
+      reserved_varying_slot(consumer, ir_var_shader_in);
+
+   const unsigned slots_used = matches.assign_locations(reserved_slots,
+                                                        prog->SeparateShader);
    matches.store_locations();
 
    for (unsigned i = 0; i < num_tfeedback_decls; ++i) {
@@ -1637,7 +1715,8 @@ check_against_output_limit(struct gl_context *ctx,
 
       if (var && var->data.mode == ir_var_shader_out &&
           var_counts_against_varying_limit(producer->Stage, var)) {
-         output_vectors += var->type->count_attribute_slots();
+         /* outputs for fragment shader can't be doubles */
+         output_vectors += var->type->count_attribute_slots(false);
       }
    }
 
@@ -1678,7 +1757,8 @@ check_against_input_limit(struct gl_context *ctx,
 
       if (var && var->data.mode == ir_var_shader_in &&
           var_counts_against_varying_limit(consumer->Stage, var)) {
-         input_vectors += var->type->count_attribute_slots();
+         /* vertex inputs aren't varying counted */
+         input_vectors += var->type->count_attribute_slots(false);
       }
    }
 
